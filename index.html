@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="da">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1E3A5F">
+<meta name="color-scheme" content="light">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Ugeseddel">
+<meta name="format-detection" content="telephone=no">
+<title>Ugeseddel</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" type="image/png" href="icons/icon-192.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <button id="prev" class="nav" aria-label="Forrige uge">‹</button>
+  <button id="weekBtn" class="week" aria-label="Gå til denne uge">
+    <span id="weekTitle">Uge</span>
+    <span id="weekSub"></span>
+  </button>
+  <button id="next" class="nav" aria-label="Næste uge">›</button>
+  <button id="menu" class="nav menu" aria-label="Indstillinger">⋮</button>
+</header>
+
+<div id="install" class="install" hidden></div>
+
+<main id="days"></main>
+
+<footer class="bottom">
+  <div class="totrow"><span>Timer i alt</span><strong id="total">0 t</strong></div>
+  <div id="missing" class="missing"></div>
+  <button id="approve" class="approve" disabled>GODKEND UGE</button>
+</footer>
+
+<div id="modal" class="overlay" hidden><div class="sheet" id="sheet" role="dialog" aria-modal="true"></div></div>
+<div id="toast" class="toast" hidden></div>
+
+<script src="app.js"></script>
+</body>
+</html>
