@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '1.0';
+const VERSION = '1.1';
 const DAYS = ['Mandag', 'Tirsdag', 'Onsdag', 'Torsdag', 'Fredag'];
 const SHORT = ['Man', 'Tir', 'Ons', 'Tor', 'Fre'];
 const TYPES = ['Arbejde', 'Syg', 'Ferie', 'Fri', 'Helligdag'];
@@ -68,18 +68,30 @@ function parseTime(s) {
 }
 const isWork = (i) => days[i].type === WORK;
 function pause(i) { const s = settings(); return i === 4 ? s.pauseFri : s.pauseMT; }
-function workedMin(i) {
-  const p = parseTime(days[i].time);
-  return p ? Math.max(0, p[1] - p[0] - pause(i)) : -1;
+const MAX_PLACES = 4;
+/** De steder der tæller: første linje altid, ekstra linjer kun hvis der står noget i dem. */
+const places = (i) => days[i].entries.filter((e, k) => k === 0 || e.time.trim() || e.city.trim());
+/** Samlet tid på stederne i minutter, 'bad' hvis en tid er ugyldig, 'overlap' hvis tider overlapper. */
+function spanMin(i) {
+  const r = [];
+  for (const e of places(i)) { const p = parseTime(e.time); if (!p) return 'bad'; r.push(p); }
+  r.sort((a, b) => a[0] - b[0]);
+  for (let k = 1; k < r.length; k++) if (r[k][0] < r[k - 1][1]) return 'overlap';
+  return r.reduce((s, p) => s + p[1] - p[0], 0);
 }
-const complete = (i) => !isWork(i) || (parseTime(days[i].time) && days[i].city.trim() !== '');
+function workedMin(i) {
+  const s = spanMin(i);
+  return typeof s === 'number' ? Math.max(0, s - pause(i)) : -1;
+}
+const complete = (i) => !isWork(i) || (workedMin(i) >= 0 && places(i).every((e) => e.city.trim() !== ''));
 function totalMin() { let t = 0; for (let i = 0; i < 5; i++) if (isWork(i)) t += Math.max(0, workedMin(i)); return t; }
 function fmtH(min) {
   if (min % 60 === 0) return String(min / 60);
   return (min / 60).toFixed(2).replace(/0+$/, '').replace('.', ',');
 }
 function clock(min) { const h = Math.floor(min / 60), m = min % 60; return m ? `${h}:${pad2(m)}` : String(h); }
-function timeText(i) { const p = parseTime(days[i].time); return p ? `${clock(p[0])}-${clock(p[1])}` : days[i].time.trim(); }
+function range(s) { const p = parseTime(s); return p ? `${clock(p[0])}-${clock(p[1])}` : s.trim(); }
+const placesText = (i) => places(i).map((e) => `${range(e.time)} ${e.city.trim()}`).join(', ');
 
 // ------------------------------------------------------------------ data
 
@@ -88,7 +100,10 @@ function loadWeek() {
   days = [];
   for (let i = 0; i < 5; i++) {
     const o = saved[i] || {};
-    days.push({ type: TYPES.includes(o.type) ? o.type : WORK, time: o.time || '', city: o.city || '', note: o.note || '' });
+    const entries = Array.isArray(o.entries) && o.entries.length
+      ? o.entries.map((e) => ({ time: (e && e.time) || '', city: (e && e.city) || '' }))
+      : [{ time: o.time || '', city: o.city || '' }];          // gammelt format: én tid + én by
+    days.push({ type: TYPES.includes(o.type) ? o.type : WORK, note: o.note || '', entries });
   }
   store.set('lastCurrent', ymd(mondayOf(new Date())));
   render();
@@ -101,8 +116,11 @@ function allCities() {
     const key = localStorage.key(k);
     if (!key || !key.startsWith('week_')) continue;
     for (const d of store.get(key, [])) {
-      const c = (d && d.city || '').trim();
-      if (c && !set.has(c.toLowerCase())) set.set(c.toLowerCase(), c);
+      if (!d) continue;
+      for (const e of [d, ...(Array.isArray(d.entries) ? d.entries : [])]) {
+        const c = (e && e.city || '').trim();
+        if (c && !set.has(c.toLowerCase())) set.set(c.toLowerCase(), c);
+      }
     }
   }
   return [...set.values()].sort((a, b) => a.localeCompare(b, 'da'));
@@ -148,21 +166,34 @@ function card(i) {
     typerow.append(el('button', {
       class: 'copy', type: 'button', onclick: () => {
         const p = days[i - 1];
-        if (p.type !== WORK || (!p.time && !p.city)) return toast(DAYS[i - 1] + ' har ingen arbejdstid at kopiere');
-        D.time = p.time; D.city = p.city; save(); rebuild(i);
+        if (p.type !== WORK || !p.entries.some((e) => e.time.trim() || e.city.trim()))
+          return toast(DAYS[i - 1] + ' har ingen arbejdstid at kopiere');
+        D.entries = p.entries.map((e) => ({ time: e.time, city: e.city })); save(); rebuild(i);
       },
     }, '↓ Som i går'));
   }
 
   const c = el('div', { class: 'card' + (today ? ' today' : ''), id: 'card' + i }, head, typerow);
   if (isWork(i)) {
-    const t = el('input', { type: 'text', class: 't', placeholder: '7 - 16', value: D.time, autocomplete: 'off', autocapitalize: 'off', spellcheck: false, enterKeyHint: 'next', 'aria-label': DAYS[i] + ' tid' });
-    t.addEventListener('input', () => { D.time = t.value; save(); updateTotals(); });
-    const ci = el('input', { type: 'text', class: 'c', placeholder: 'By', value: D.city, list: 'cities', autocomplete: 'off', autocapitalize: 'words', enterKeyHint: 'done', 'aria-label': DAYS[i] + ' by' });
-    ci.addEventListener('input', () => { D.city = ci.value; save(); updateTotals(); });
-    t.addEventListener('keydown', (e) => { if (e.key === 'Enter') ci.focus(); });
-    ci.addEventListener('keydown', (e) => { if (e.key === 'Enter') ci.blur(); });
-    c.append(el('div', { class: 'fields' }, t, ci));
+    D.entries.forEach((E, k) => {
+      const t = el('input', { type: 'text', class: 't', placeholder: k ? '12 - 16' : '7 - 16', value: E.time, autocomplete: 'off', autocapitalize: 'off', spellcheck: false, enterKeyHint: 'next', 'aria-label': `${DAYS[i]} tid ${k + 1}` });
+      t.addEventListener('input', () => { E.time = t.value; save(); updateTotals(); });
+      const ci = el('input', { type: 'text', class: 'c', placeholder: k ? 'By / sted' : 'By', value: E.city, list: 'cities', autocomplete: 'off', autocapitalize: 'words', enterKeyHint: 'done', 'aria-label': `${DAYS[i]} by ${k + 1}` });
+      ci.addEventListener('input', () => { E.city = ci.value; save(); updateTotals(); });
+      t.addEventListener('keydown', (e) => { if (e.key === 'Enter') ci.focus(); });
+      ci.addEventListener('keydown', (e) => { if (e.key === 'Enter') ci.blur(); });
+      const row = el('div', { class: 'fields' + (k ? ' extra' : '') }, t, ci);
+      if (k > 0) row.append(el('button', {
+        class: 'rm', type: 'button', 'aria-label': 'Fjern sted', onclick: () => { D.entries.splice(k, 1); save(); rebuild(i); },
+      }, '✕'));
+      c.append(row);
+    });
+    if (D.entries.length < MAX_PLACES) c.append(el('button', {
+      class: 'add', type: 'button', onclick: () => {
+        D.entries.push({ time: '', city: '' }); save(); rebuild(i);
+        const rows = $('card' + i).querySelectorAll('.fields'); rows[rows.length - 1].querySelector('input').focus();
+      },
+    }, '+ Tilføj sted'));
   } else {
     const n = el('input', { type: 'text', placeholder: D.type === 'Syg' ? 'Årsag' : 'Bemærkning (valgfri)', value: D.note, autocapitalize: 'sentences', enterKeyHint: 'done', 'aria-label': DAYS[i] + ' bemærkning' });
     n.addEventListener('input', () => { D.note = n.value; save(); });
@@ -179,9 +210,10 @@ function updateTotals() {
   for (let i = 0; i < 5; i++) {
     const h = $('h' + i);
     if (isWork(i)) {
-      const m = workedMin(i);
-      if (m >= 0) { h.textContent = fmtH(m) + ' t'; h.className = 'hours'; }
-      else if (days[i].time.trim()) { h.textContent = 'Ugyldig tid'; h.className = 'hours bad'; }
+      const s = spanMin(i), any = places(i).some((e) => e.time.trim());
+      if (typeof s === 'number') { h.textContent = fmtH(workedMin(i)) + ' t'; h.className = 'hours'; }
+      else if (s === 'overlap') { h.textContent = 'Tider overlapper'; h.className = 'hours bad'; }
+      else if (any) { h.textContent = 'Ugyldig tid'; h.className = 'hours bad'; }
       else { h.textContent = ''; h.className = 'hours'; }
     } else {
       h.textContent = days[i].type;
@@ -320,7 +352,7 @@ function smsText() {
   for (let i = 0; i < 5; i++) {
     const d = day(i), D = days[i];
     lines.push(`${SHORT[i]} ${d.getDate()}/${d.getMonth() + 1}: ` + (isWork(i)
-      ? `${timeText(i)} ${D.city.trim()}`
+      ? placesText(i)
       : D.type + (D.note.trim() ? ' – ' + D.note.trim() : '')));
   }
   lines.push(`I alt: ${fmtH(totalMin())} t`);
@@ -334,10 +366,13 @@ function txt() {
   out.push('', P('Dag', 10) + P('Dato', 8) + P('Tid', 13) + P('By / bemærkning', 24) + 'Timer', '-'.repeat(60));
   for (let i = 0; i < 5; i++) {
     const d = day(i), D = days[i];
-    let line = P(DAYS[i], 10) + P(`${pad2(d.getDate())}.${pad2(d.getMonth() + 1)}`, 8);
-    line += isWork(i) ? P(timeText(i), 13) + P(D.city.trim(), 24) + fmtH(Math.max(0, workedMin(i))) + ' t'
-      : P(D.type, 13) + P(D.note.trim(), 24) + '–';
-    out.push(line);
+    const lead = P(DAYS[i], 10) + P(`${pad2(d.getDate())}.${pad2(d.getMonth() + 1)}`, 8);
+    if (isWork(i)) {
+      places(i).forEach((e, k) => out.push(((k ? P('', 18) : lead) + P(range(e.time), 13) + P(e.city.trim(), 24)
+        + (k ? '' : fmtH(Math.max(0, workedMin(i))) + ' t')).trimEnd()));
+    } else {
+      out.push(lead + P(D.type, 13) + P(D.note.trim(), 24) + '–');
+    }
   }
   out.push('-'.repeat(60), P('I alt', 55) + fmtH(totalMin()) + ' t', '', pauseNote(), 'Godkendt ' + stamp(), '');
   return out.join('\r\n');
@@ -347,10 +382,14 @@ function csv() {
   const q = (s) => /[;"\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
   const rows = ['Dag;Dato;Type;Mødetid;Fyraften;By;Bemærkning;Pause (min);Timer'];
   for (let i = 0; i < 5; i++) {
-    const d = day(i), D = days[i], w = isWork(i), p = w ? parseTime(D.time) : null;
-    rows.push([DAYS[i], `${pad2(d.getDate())}.${pad2(d.getMonth() + 1)}.${d.getFullYear()}`, D.type,
-      p ? clock(p[0]) : '', p ? clock(p[1]) : '', q(w ? D.city.trim() : ''), q(w ? '' : D.note.trim()),
-      w ? pause(i) : '', w ? fmtH(Math.max(0, workedMin(i))) : '0'].join(';'));
+    const d = day(i), D = days[i], date = `${pad2(d.getDate())}.${pad2(d.getMonth() + 1)}.${d.getFullYear()}`;
+    if (!isWork(i)) { rows.push([DAYS[i], date, D.type, '', '', '', q(D.note.trim()), '', '0'].join(';')); continue; }
+    // Én række pr. sted; pause og dagens timer står på dagens første række.
+    places(i).forEach((e, k) => {
+      const p = parseTime(e.time);
+      rows.push([DAYS[i], date, D.type, p ? clock(p[0]) : '', p ? clock(p[1]) : '', q(e.city.trim()), '',
+        k ? '' : pause(i), k ? '' : fmtH(Math.max(0, workedMin(i)))].join(';'));
+    });
   }
   rows.push('I alt;;;;;;;;' + fmtH(totalMin()));
   return rows.join('\r\n') + '\r\n';
@@ -384,12 +423,15 @@ function drawPage(ctx) {
 
   for (let i = 0; i < 5; i++) {
     const D = days[i], ty = y + 18, d = day(i);
-    if (i % 2) { ctx.fillStyle = C.alt; ctx.fillRect(x0, y, x1 - x0, 28); }
+    const pl = isWork(i) ? places(i) : [], rh = 28 + 16 * Math.max(0, pl.length - 1);
+    if (i % 2) { ctx.fillStyle = C.alt; ctx.fillRect(x0, y, x1 - x0, rh); }
     ctx.fillStyle = C.text; f(12, true); t(DAYS[i], cx[0], ty);
     f(12); t(`${pad2(d.getDate())}.${pad2(d.getMonth() + 1)}`, cx[1], ty);
     if (isWork(i)) {
-      t(timeText(i), cx[2], ty);
-      t(fit(D.city.trim(), cx[4] - cx[3] - 10), cx[3], ty);
+      pl.forEach((e, k) => {
+        t(range(e.time), cx[2], ty + 16 * k);
+        t(fit(e.city.trim(), cx[4] - cx[3] - 10), cx[3], ty + 16 * k);
+      });
       t(pause(i) + ' min', cx[4], ty);
       f(12, true); t(fmtH(Math.max(0, workedMin(i))) + ' t', x1 - 8, ty, 'right');
     } else {
@@ -397,7 +439,7 @@ function drawPage(ctx) {
       ctx.fillStyle = C.text; f(12); t(fit(D.note.trim(), cx[4] - cx[3] - 10), cx[3], ty);
       ctx.fillStyle = C.muted; t('–', cx[4], ty); t('–', x1 - 8, ty, 'right');
     }
-    y += 28;
+    y += rh;
   }
   ctx.fillStyle = C.primary; ctx.fillRect(x0, y, x1 - x0, 1.5);
   y += 24;

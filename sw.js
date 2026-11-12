@@ -1,5 +1,5 @@
 // Gør appen brugbar uden internet. Henter altid nyeste version når der er net.
-const CACHE = 'ugeseddel-v1';
+const CACHE = 'ugeseddel-v1.1';
 const FILES = ['./', 'index.html', 'app.js', 'style.css', 'manifest.webmanifest', 'paamindelse.ics',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png'];
 
