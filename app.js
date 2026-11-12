@@ -1,8 +1,10 @@
 'use strict';
 
-const VERSION = '1.1';
-const DAYS = ['Mandag', 'Tirsdag', 'Onsdag', 'Torsdag', 'Fredag'];
-const SHORT = ['Man', 'Tir', 'Ons', 'Tor', 'Fre'];
+const VERSION = '1.2';
+const DAYS = ['Mandag', 'Tirsdag', 'Onsdag', 'Torsdag', 'Fredag', 'Lørdag', 'Søndag'];
+const SHORT = ['Man', 'Tir', 'Ons', 'Tor', 'Fre', 'Lør', 'Søn'];
+const N = 7;
+const isWeekend = (i) => i >= 5;
 const TYPES = ['Arbejde', 'Syg', 'Ferie', 'Fri', 'Helligdag'];
 const WORK = 'Arbejde';
 const MONTHS = ['januar', 'februar', 'marts', 'april', 'maj', 'juni', 'juli', 'august', 'september', 'oktober', 'november', 'december'];
@@ -17,7 +19,7 @@ const store = {
   get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } },
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { } },
 };
-const DEFAULTS = { name: '', boss: '', format: 'PDF', pauseMT: 60, pauseFri: 30 };
+const DEFAULTS = { name: '', boss: '', format: 'PDF', pauseMT: 60, pauseFri: 30, pauseWknd: 60 };
 function settings() { return Object.assign({}, DEFAULTS, store.get('settings', {})); }
 
 // ------------------------------------------------------------------ dato/uge
@@ -47,7 +49,7 @@ const weekKey = () => 'week_' + ymd(monday);
 const isCurrentWeek = () => ymd(monday) === ymd(mondayOf(new Date()));
 
 function period() {
-  const a = day(0), b = day(4);
+  const a = day(0), b = day(N - 1);
   if (a.getFullYear() !== b.getFullYear())
     return `${a.getDate()}. ${MON3[a.getMonth()]} ${a.getFullYear()} – ${b.getDate()}. ${MON3[b.getMonth()]} ${b.getFullYear()}`;
   if (a.getMonth() !== b.getMonth())
@@ -67,7 +69,9 @@ function parseTime(s) {
   return [a, b];
 }
 const isWork = (i) => days[i].type === WORK;
-function pause(i) { const s = settings(); return i === 4 ? s.pauseFri : s.pauseMT; }
+function pause(i) { const s = settings(); return isWeekend(i) ? s.pauseWknd : i === 4 ? s.pauseFri : s.pauseMT; }
+/** Hverdage kommer altid med i SMS/filer; weekenddage kun hvis der er noget at vise. */
+const shown = (i) => !isWeekend(i) || days[i].type !== 'Fri' || days[i].note.trim() !== '';
 const MAX_PLACES = 4;
 /** De steder der tæller: første linje altid, ekstra linjer kun hvis der står noget i dem. */
 const places = (i) => days[i].entries.filter((e, k) => k === 0 || e.time.trim() || e.city.trim());
@@ -84,7 +88,7 @@ function workedMin(i) {
   return typeof s === 'number' ? Math.max(0, s - pause(i)) : -1;
 }
 const complete = (i) => !isWork(i) || (workedMin(i) >= 0 && places(i).every((e) => e.city.trim() !== ''));
-function totalMin() { let t = 0; for (let i = 0; i < 5; i++) if (isWork(i)) t += Math.max(0, workedMin(i)); return t; }
+function totalMin() { let t = 0; for (let i = 0; i < N; i++) if (isWork(i)) t += Math.max(0, workedMin(i)); return t; }
 function fmtH(min) {
   if (min % 60 === 0) return String(min / 60);
   return (min / 60).toFixed(2).replace(/0+$/, '').replace('.', ',');
@@ -98,12 +102,12 @@ const placesText = (i) => places(i).map((e) => `${range(e.time)} ${e.city.trim()
 function loadWeek() {
   const saved = store.get(weekKey(), []);
   days = [];
-  for (let i = 0; i < 5; i++) {
+  for (let i = 0; i < N; i++) {
     const o = saved[i] || {};
     const entries = Array.isArray(o.entries) && o.entries.length
       ? o.entries.map((e) => ({ time: (e && e.time) || '', city: (e && e.city) || '' }))
       : [{ time: o.time || '', city: o.city || '' }];          // gammelt format: én tid + én by
-    days.push({ type: TYPES.includes(o.type) ? o.type : WORK, note: o.note || '', entries });
+    days.push({ type: TYPES.includes(o.type) ? o.type : (isWeekend(i) ? 'Fri' : WORK), note: o.note || '', entries });
   }
   store.set('lastCurrent', ymd(mondayOf(new Date())));
   render();
@@ -147,7 +151,7 @@ function render() {
   const dl = el('datalist', { id: 'cities' }, ...allCities().map((c) => el('option', { value: c })));
   const box = $('days');
   box.replaceChildren(dl);
-  for (let i = 0; i < 5; i++) box.append(card(i));
+  for (let i = 0; i < N; i++) box.append(card(i));
   updateTotals();
 }
 
@@ -207,7 +211,7 @@ function rebuild(i) { $('card' + i).replaceWith(card(i)); updateTotals(); }
 
 function updateTotals() {
   const missing = [];
-  for (let i = 0; i < 5; i++) {
+  for (let i = 0; i < N; i++) {
     const h = $('h' + i);
     if (isWork(i)) {
       const s = spanMin(i), any = places(i).some((e) => e.time.trim());
@@ -256,6 +260,7 @@ function showSettings() {
   });
   const pMT = el('input', { type: 'number', inputMode: 'numeric', value: s.pauseMT, min: 0, max: 600 });
   const pF = el('input', { type: 'number', inputMode: 'numeric', value: s.pauseFri, min: 0, max: 600 });
+  const pW = el('input', { type: 'number', inputMode: 'numeric', value: s.pauseWknd, min: 0, max: 600 });
   const num = (inp, d) => { const n = parseInt(inp.value, 10); return isNaN(n) ? d : Math.max(0, Math.min(600, n)); };
 
   openModal(
@@ -264,7 +269,7 @@ function showSettings() {
     el('label', { class: 'lbl' }, 'Chefens mobilnummer'), boss,
     el('label', { class: 'lbl' }, 'Filformat'), ...radios.map((x) => x.row),
     el('label', { class: 'lbl' }, 'Pause der trækkes fra (minutter)'),
-    el('div', { class: 'pauses' }, 'Man–tor', pMT, 'Fredag', pF),
+    el('div', { class: 'pauses' }, 'Man–tor', pMT, 'Fre', pF, 'Lør–søn', pW),
     el('label', { class: 'lbl' }, 'Påmindelse fredag kl. 9:00'),
     el('a', { class: 'linkbtn', href: 'paamindelse.ics', target: '_blank', rel: 'noopener' }, '📅 Tilføj påmindelse til kalenderen'),
     el('p', { class: 'note' }, 'Lægger "HUSK AT SENDE TIMER" i telefonens kalender hver fredag kl. 9:00 med alarm. Skal kun gøres én gang.'),
@@ -276,7 +281,7 @@ function showSettings() {
           store.set('settings', {
             name: name.value.trim(), boss: boss.value.trim(),
             format: (radios.find((x) => x.r.checked) || radios[0]).v,
-            pauseMT: num(pMT, 60), pauseFri: num(pF, 30),
+            pauseMT: num(pMT, 60), pauseFri: num(pF, 30), pauseWknd: num(pW, 60),
           });
           closeModal(); updateTotals(); toast('Indstillinger gemt');
         },
@@ -304,7 +309,10 @@ function approve() {
 
 const fileBase = () => `Timeseddel_uge${weekNo()}_${weekYear()}`;
 function stamp() { const n = new Date(); return `${pad2(n.getDate())}.${pad2(n.getMonth() + 1)}.${n.getFullYear()} kl. ${pad2(n.getHours())}:${pad2(n.getMinutes())}`; }
-function pauseNote() { const s = settings(); return `Pause fratrukket: ${s.pauseMT} min man–tor, ${s.pauseFri} min fredag`; }
+function pauseNote() {
+  const s = settings(), wk = [5, 6].some((i) => isWork(i));
+  return `Pause fratrukket: ${s.pauseMT} min man–tor, ${s.pauseFri} min fredag` + (wk ? `, ${s.pauseWknd} min lør–søn` : '');
+}
 
 function makeFile(fmt) {
   if (fmt === 'PDF') return new File([pdf()], fileBase() + '.pdf', { type: 'application/pdf' });
@@ -349,7 +357,8 @@ async function copyText() {
 function smsText() {
   const name = settings().name;
   const lines = [`Timer uge ${weekNo()}` + (name ? ' – ' + name : '')];
-  for (let i = 0; i < 5; i++) {
+  for (let i = 0; i < N; i++) {
+    if (!shown(i)) continue;
     const d = day(i), D = days[i];
     lines.push(`${SHORT[i]} ${d.getDate()}/${d.getMonth() + 1}: ` + (isWork(i)
       ? placesText(i)
@@ -364,7 +373,8 @@ function txt() {
   const out = [`TIMESEDDEL – UGE ${weekNo()}, ${weekYear()}`, period()];
   if (name) out.push('Navn: ' + name);
   out.push('', P('Dag', 10) + P('Dato', 8) + P('Tid', 13) + P('By / bemærkning', 24) + 'Timer', '-'.repeat(60));
-  for (let i = 0; i < 5; i++) {
+  for (let i = 0; i < N; i++) {
+    if (!shown(i)) continue;
     const d = day(i), D = days[i];
     const lead = P(DAYS[i], 10) + P(`${pad2(d.getDate())}.${pad2(d.getMonth() + 1)}`, 8);
     if (isWork(i)) {
@@ -381,7 +391,8 @@ function txt() {
 function csv() {
   const q = (s) => /[;"\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
   const rows = ['Dag;Dato;Type;Mødetid;Fyraften;By;Bemærkning;Pause (min);Timer'];
-  for (let i = 0; i < 5; i++) {
+  for (let i = 0; i < N; i++) {
+    if (!shown(i)) continue;
     const d = day(i), D = days[i], date = `${pad2(d.getDate())}.${pad2(d.getMonth() + 1)}.${d.getFullYear()}`;
     if (!isWork(i)) { rows.push([DAYS[i], date, D.type, '', '', '', q(D.note.trim()), '', '0'].join(';')); continue; }
     // Én række pr. sted; pause og dagens timer står på dagens første række.
@@ -421,10 +432,12 @@ function drawPage(ctx) {
   t('Timer', x1 - 8, y + 16, 'right');
   y += 24;
 
-  for (let i = 0; i < 5; i++) {
+  let row = 0;
+  for (let i = 0; i < N; i++) {
+    if (!shown(i)) continue;
     const D = days[i], ty = y + 18, d = day(i);
     const pl = isWork(i) ? places(i) : [], rh = 28 + 16 * Math.max(0, pl.length - 1);
-    if (i % 2) { ctx.fillStyle = C.alt; ctx.fillRect(x0, y, x1 - x0, rh); }
+    if (row++ % 2) { ctx.fillStyle = C.alt; ctx.fillRect(x0, y, x1 - x0, rh); }
     ctx.fillStyle = C.text; f(12, true); t(DAYS[i], cx[0], ty);
     f(12); t(`${pad2(d.getDate())}.${pad2(d.getMonth() + 1)}`, cx[1], ty);
     if (isWork(i)) {

@@ -1,7 +1,7 @@
 {
   "name": "Ugeseddel",
   "short_name": "Ugeseddel",
-  "description": "Ugentlig timeseddel – mandag til fredag",
+  "description": "Ugentlig timeseddel – mandag til søndag",
   "lang": "da",
   "start_url": "./",
   "scope": "./",

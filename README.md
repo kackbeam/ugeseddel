@@ -1,6 +1,6 @@
 # Ugeseddel
 
-Ugentlig timeseddel til telefonen (iPhone og Android), mandag–fredag.
+Ugentlig timeseddel til telefonen (iPhone og Android), mandag–søndag.
 
 **Åbn appen:** https://kackbeam.github.io/ugeseddel/
 
