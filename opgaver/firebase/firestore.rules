@@ -1,0 +1,48 @@
+rules_version = '2';
+
+// Regler for databasen. Kopieres ind under Firestore Database → Regler (se OPSAETNING.md).
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function profile() { return get(/databases/$(database)/documents/users/$(request.auth.uid)).data; }
+    function hasProfile() { return signedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid)); }
+    function approved() { return hasProfile() && profile().role in ['medarbejder', 'chef']; }
+    function isChef() { return hasProfile() && profile().role == 'chef'; }
+
+    // Brugere: alle opretter sig selv som "afventer". Kun chefen kan ændre roller.
+    match /users/{uid} {
+      allow read: if approved() || (signedIn() && request.auth.uid == uid);
+      allow create: if signedIn() && request.auth.uid == uid
+        && request.resource.data.role == 'afventer'
+        && request.resource.data.keys().hasOnly(['name', 'email', 'role', 'createdAt']);
+      allow update: if isChef()
+        || (signedIn() && request.auth.uid == uid
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name']));
+      allow delete: if isChef();
+    }
+
+    // Opgaver: chefen opretter/retter/sletter. Medarbejdere må kun starte, stoppe og afslutte.
+    match /tasks/{taskId} {
+      allow read: if approved();
+      allow create, delete: if isChef();
+      allow update: if isChef()
+        || (approved()
+            && (request.resource.data.status == resource.data.status
+                || request.resource.data.status in ['igang', 'afsluttet'])
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                 'status', 'startedAt', 'startedBy', 'startedByName',
+                 'finishedAt', 'finishedBy', 'finishedByName',
+                 'active', 'updatedAt', 'lastBy']));
+
+      // Noter, billeder og start/stop-hændelser.
+      match /log/{logId} {
+        allow read: if approved();
+        allow create: if approved() && request.resource.data.by == request.auth.uid;
+        allow update: if approved() && resource.data.by == request.auth.uid
+          && request.resource.data.by == request.auth.uid;
+        allow delete: if isChef() || (approved() && resource.data.by == request.auth.uid);
+      }
+    }
+  }
+}
