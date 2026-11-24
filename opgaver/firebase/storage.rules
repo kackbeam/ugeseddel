@@ -1,0 +1,18 @@
+rules_version = '2';
+
+// Regler for billeder og filer. Kopieres ind under Storage → Regler (se OPSAETNING.md).
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function role() {
+      return firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.role;
+    }
+    function approved() { return request.auth != null && role() in ['medarbejder', 'chef']; }
+
+    match /tasks/{taskId}/{fileName} {
+      allow read: if approved();
+      allow create: if approved() && request.resource.size < 40 * 1024 * 1024;
+      allow delete: if approved();
+    }
+  }
+}
