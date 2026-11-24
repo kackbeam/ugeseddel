@@ -4,7 +4,7 @@ const CACHE = 'opgaver-v1.0';
 const FILES_CACHE = 'opgaver-filer';
 const SDK = 'https://www.gstatic.com/firebasejs/10.14.1/';
 const FILES = ['./', 'index.html', 'app.js', 'style.css', 'firebase-config.js', 'manifest.webmanifest',
-  'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png',
+  '../icons/icon-192.png', '../icons/icon-512.png', '../icons/apple-touch-icon.png',
   SDK + 'firebase-app.js', SDK + 'firebase-auth.js', SDK + 'firebase-firestore.js', SDK + 'firebase-storage.js'];
 
 self.addEventListener('install', (e) => {
