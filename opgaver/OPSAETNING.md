@@ -90,10 +90,16 @@ Dette trin er kun nødvendigt for den første chef. Herefter klares alt i appen.
 
 ---
 
+## Opdatering af regler (version 1.1)
+
+Version 1.1 har fået rapport, godkendelse og indstillinger. Derfor skal databasereglerne opdateres:
+**Firestore Database → Rules**: slet alt, indsæt hele indholdet af [`firebase/firestore.rules`](firebase/firestore.rules) igen og tryk **Publish**.
+
 ## Godt at vide
 
 - **Uden net:** noter, start/stop og afslutning gemmes på telefonen og sendes automatisk, når der er net igen. Det samme gælder billeder, som venter i kø. Billeder og opgaver, man har set før, kan også ses uden net.
 - **Glemt adgangskode:** der er et link på login-siden, som sender en mail.
 - **Hvem kan hvad:**
-  - **Chef:** opretter, retter, sletter og genåbner opgaver og godkender brugere.
-  - **Medarbejder:** ser alle opgaver, starter, stopper og afslutter dem og tilføjer noter og billeder.
+  - **Chef:** opretter, retter, sletter og genåbner opgaver, godkender rapporter og brugere og styrer indstillingerne.
+  - **Medarbejder:** ser alle opgaver, starter og stopper dem, melder dem færdige med en rapport og tilføjer noter og billeder.
+- **Brugervejledninger** (PDF) ligger i [`vejledning/`](vejledning/) og kan åbnes fra appens menu og login-siden.
