@@ -1,6 +1,6 @@
 // Gør appen brugbar uden internet.
 // Egne filer: henter altid nyeste version når der er net. Firebase-biblioteket og billeder gemmes lokalt.
-const CACHE = 'opgaver-v1.1';
+const CACHE = 'opgaver-v1.2';
 const FILES_CACHE = 'opgaver-filer';
 const SDK = 'https://www.gstatic.com/firebasejs/10.14.1/';
 const FILES = ['./', 'index.html', 'app.js', 'style.css', 'firebase-config.js', 'manifest.webmanifest',
