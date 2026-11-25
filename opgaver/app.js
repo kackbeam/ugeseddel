@@ -6,7 +6,7 @@ import {
 } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
 import {
   initializeFirestore, persistentLocalCache, persistentMultipleTabManager, connectFirestoreEmulator,
-  collection, doc, setDoc, updateDoc, onSnapshot, query, orderBy, limit, getDocs,
+  collection, doc, getDoc, setDoc, updateDoc, onSnapshot, query, orderBy, limit, getDocs,
   writeBatch, arrayUnion, arrayRemove, increment, deleteField,
 } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
 import {
@@ -14,11 +14,13 @@ import {
 } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-storage.js';
 import { firebaseConfig } from './firebase-config.js';
 
-const VERSION = '1.0';
-const STATUS = { ny: 'Ny', igang: 'I gang', afsluttet: 'Afsluttet' };
+const VERSION = '1.1';
+const STATUS = { ny: 'Ny', igang: 'I gang', tilgodkendelse: 'Til godkendelse', afsluttet: 'Afsluttet' };
+const SET_DEF = { timeTracking: true, mileage: false, signature: false, companyName: '' };
+const UNITS = ['stk', 'm', 'm²', 'm³', 'kg', 'l', 'sæk', 'rulle', 'pk', 'time'];
 const ROLES = ['afventer', 'medarbejder', 'chef', 'deaktiveret'];
 const ROLE_L = { afventer: 'Afventer godkendelse', medarbejder: 'Medarbejder', chef: 'Chef', deaktiveret: 'Deaktiveret' };
-const CAT_L = { tegning: 'Tegning', ler: 'LER', billede: 'Billede', dokument: 'Dokument' };
+const CAT_L = { tegning: 'Tegning', ler: 'LER', billede: 'Billede', dokument: 'Dokument', efter: 'Efter-billede' };
 const DAYS3 = ['søn.', 'man.', 'tir.', 'ons.', 'tor.', 'fre.', 'lør.'];
 
 const $ = (id) => document.getElementById(id);
@@ -29,8 +31,9 @@ const rid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 
 const S = {
   user: null, profile: null, users: {}, tasks: [], tasksLoaded: false, started: false, unsubs: [],
   view: 'list', viewId: null, tab: null, search: '', log: [], detailUnsub: null, compose: [],
-  formReady: false, formFiles: [], removeFiles: [], queue: [], pendingName: '',
+  formReady: false, formFiles: [], removeFiles: [], queue: [], pendingName: '', settings: {}, mats: [], kunde: false,
 };
+const cfg = () => ({ ...SET_DEF, ...S.settings });
 
 // ------------------------------------------------------------------ formatering
 
@@ -193,6 +196,7 @@ function renderLogin(mode) {
     <div class="authlinks">${mode === 'login'
     ? '<button data-m="signup">Ny bruger? Opret dig her</button><button data-m="reset">Glemt adgangskode?</button>'
     : '<button data-m="login">Tilbage til log ind</button>'}</div>
+    <a class="guidelink" href="${guideUrl()}" target="_blank" rel="noopener">📖 Sådan installerer og bruger du appen</a>
   </section>`;
   $('view').querySelectorAll('[data-m]').forEach((b) => { b.onclick = () => renderLogin(b.dataset.m); });
   $('af').onsubmit = async (e) => {
@@ -256,6 +260,10 @@ function startApp() {
     S.tasksLoaded = true;
     refresh();
   }, errLog));
+  S.unsubs.push(onSnapshot(doc(db, 'settings', 'app'), (snap) => {
+    S.settings = snap.exists() ? snap.data() : {};
+    refresh();
+  }, errLog));
   route();
   processQueue();
 }
@@ -265,10 +273,13 @@ window.addEventListener('hashchange', () => { if (S.started) route(); });
 function route() {
   stopDetail();
   if (!$('modal').hidden) closeSheet();
-  const [p, id] = location.hash.replace(/^#\/?/, '').split('/');
+  const [p, id, extra] = location.hash.replace(/^#\/?/, '').split('/');
   S.view = p || 'list'; S.viewId = id || null; S.formReady = false;
   window.scrollTo(0, 0);
   if (p === 'opgave' && id) return viewDetail(id);
+  if (p === 'meld' && id) return viewReportForm(id);
+  if (p === 'rapport' && id) { S.kunde = extra === 'kunde'; return viewReport(id); }
+  if (p === 'indstillinger' && isChef()) return viewSettings();
   if (p === 'ny' && isChef()) return viewForm(null);
   if (p === 'ret' && id && isChef()) return viewForm(id);
   if (p === 'brugere' && isChef()) return viewUsers();
@@ -282,10 +293,15 @@ function refresh() {
   if (S.view === 'list') renderListResults();
   else if (S.view === 'opgave') renderDetailTop();
   else if (S.view === 'brugere') renderUsers();
+  else if (S.view === 'rapport') renderReport();
+  else if (S.view === 'meld' && !S.formReady) viewReportForm(S.viewId);
   else if ((S.view === 'ret' || S.view === 'ny') && !S.formReady) viewForm(S.viewId);
 }
 
 function updateMenuBadge() { $('menuDot').hidden = !(isChef() && pendingCount() > 0); }
+
+const isIOS = () => /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const guideUrl = (ios = isIOS()) => `vejledning/opgaver-${ios ? 'iphone' : 'android'}.pdf`;
 
 // ------------------------------------------------------------------ menu
 
@@ -294,6 +310,8 @@ $('menuBtn').onclick = () => {
   const n = pendingCount();
   const s = openSheet(`<div class="who"><b>${esc(myName())}</b><small>${esc(S.user.email)}${S.profile ? ' · ' + ROLE_L[S.profile.role] : ''}</small></div>
     ${isChef() ? `<a class="mi" href="#/brugere">👥 Brugere${n ? ` <span class="badge">${n} venter</span>` : ''}</a>` : ''}
+    ${isChef() ? '<a class="mi" href="#/indstillinger">⚙️ Indstillinger</a>' : ''}
+    <a class="mi" href="${guideUrl()}" target="_blank" rel="noopener">📖 Brugervejledning <small>(${isIOS() ? 'iPhone' : 'Android'})</small></a>
     ${approved() ? '<button class="mi" id="mName">✏️ Skift mit navn</button>' : ''}
     <button class="mi" id="mReload">🔄 Opdatér appen</button>
     <button class="mi" id="mOut">🚪 Log ud</button>
@@ -322,9 +340,10 @@ $('menuBtn').onclick = () => {
 
 function viewList() {
   setHeader('Opgaver', null);
-  if (!S.tab) S.tab = isChef() ? 'aktive' : 'mine';
-  const tabs = [['mine', 'Mine'], ['aktive', 'Alle aktive'], ['afsluttede', 'Afsluttede']];
-  $('view').innerHTML = `<div class="tabs">${tabs.map(([k, l]) => `<button data-tab="${k}" class="${S.tab === k ? 'on' : ''}">${l}</button>`).join('')}</div>
+  const tabs = isChef() ? [['aktive', 'Aktive'], ['godkend', 'Til godkendelse'], ['afsluttede', 'Afsluttede']]
+    : [['mine', 'Mine'], ['aktive', 'Alle aktive'], ['afsluttede', 'Afsluttede']];
+  if (!S.tab || !tabs.some(([k]) => k === S.tab)) S.tab = isChef() ? 'aktive' : 'mine';
+  $('view').innerHTML = `<div class="tabs">${tabs.map(([k, l]) => `<button data-tab="${k}" class="${S.tab === k ? 'on' : ''}">${l}${k === 'godkend' ? '<span class="tdot" id="godkDot" hidden></span>' : ''}</button>`).join('')}</div>
     <div class="searchwrap"><input id="search" type="search" placeholder="Søg i titel, adresse, kunde…" value="${esc(S.search)}"></div>
     <div id="list"></div>
     ${isChef() ? '<a class="fab" href="#/ny" aria-label="Ny opgave">＋ Ny opgave</a>' : ''}`;
@@ -344,25 +363,30 @@ function renderListResults() {
   if (!el) return;
   if (!S.tasksLoaded) { el.innerHTML = '<div class="empty">Henter opgaver…</div>'; return; }
   const uid = me(), q = S.search.trim().toLowerCase();
+  const nGodk = S.tasks.filter((t) => t.status === 'tilgodkendelse').length;
+  if ($('godkDot')) { $('godkDot').hidden = !nGodk; $('godkDot').textContent = nGodk || ''; }
   let arr = S.tasks.filter((t) => {
     if (S.tab === 'afsluttede') return t.status === 'afsluttet';
+    if (S.tab === 'godkend') return t.status === 'tilgodkendelse';
     if (t.status === 'afsluttet') return false;
     if (S.tab === 'mine') return (t.assignees || []).includes(uid) || !!(t.active && t.active[uid]);
     return true;
   });
   if (q) arr = arr.filter((t) => [t.title, t.address, t.customer, t.description, t.ler && t.ler.number].join(' ').toLowerCase().includes(q));
-  const rank = (t) => (t.status === 'igang' ? 0 : 1);
+  const rank = (t) => ({ tilgodkendelse: 0, igang: 1 }[t.status] ?? 2);
   if (S.tab === 'afsluttede') arr.sort((a, b) => (b.finishedAt || 0) - (a.finishedAt || 0));
+  else if (S.tab === 'godkend') arr.sort((a, b) => (a.reportAt || 0) - (b.reportAt || 0));
   else arr.sort((a, b) => rank(a) - rank(b) || (a.plannedDate || '9999').localeCompare(b.plannedDate || '9999') || (b.createdAt || 0) - (a.createdAt || 0));
   const emptyTxt = q ? 'Ingen opgaver matcher søgningen.'
-    : S.tab === 'mine' ? 'Du har ingen aktive opgaver lige nu.' : S.tab === 'aktive' ? 'Der er ingen aktive opgaver.' : 'Ingen afsluttede opgaver endnu.';
+    : S.tab === 'mine' ? 'Du har ingen aktive opgaver lige nu.' : S.tab === 'aktive' ? 'Der er ingen aktive opgaver.'
+      : S.tab === 'godkend' ? 'Ingen opgaver venter på godkendelse.' : 'Ingen afsluttede opgaver endnu.';
   el.innerHTML = arr.length ? arr.map(card).join('') : `<div class="empty">${emptyTxt}</div>`;
 }
 
 function card(t) {
   const ler = lerState(t), names = (t.assignees || []).map(uname).join(', ');
   const unseen = (t.updatedAt || 0) > (seenMap()[t.id] || 0) && t.lastBy !== me();
-  const activeN = Object.keys(t.active || {}).length;
+  const activeN = cfg().timeTracking ? Object.keys(t.active || {}).length : 0;
   return `<a class="card task st-${t.status}" href="#/opgave/${t.id}">
     <div class="trow"><span class="chip st-${t.status}">${STATUS[t.status] || ''}</span>
       ${activeN ? `<span class="chip live">● ${activeN} på opgaven</span>` : ''}
@@ -373,6 +397,7 @@ function card(t) {
     ${t.customer ? `<div class="sub">🏠 ${esc(t.customer)}</div>` : ''}
     <div class="sub">👷 ${names ? esc(names) : '<i>Ikke tildelt</i>'}</div>
     ${ler && t.status !== 'afsluttet' && ler.cls !== 'ok' ? `<div class="ler ${ler.cls}">⚠️ ${ler.text}</div>` : ''}
+    ${t.status === 'tilgodkendelse' ? `<div class="sub wait">📝 Meldt færdig ${fmtDT(t.reportAt)}${t.reportByName ? ' af ' + esc(t.reportByName) : ''}</div>` : ''}
     ${t.status === 'afsluttet' ? `<div class="sub">✔ Afsluttet ${fmtDT(t.finishedAt)}</div>` : ''}
   </a>`;
 }
@@ -462,18 +487,25 @@ function renderDetailTop() {
   const qn = (c) => S.queue.filter((q) => q.taskId === t.id && !q.logId && q.category === c).length;
   const qTxt = (c) => (qn(c) ? `${qn(c)} fil(er) venter på upload` : '');
 
+  const c = cfg(), rep = t.reportId ? S.log.find((e) => e.id === t.reportId) : null;
+  const seeRep = t.reportId ? `<a class="btn big" href="#/rapport/${t.id}">📄 Se rapport</a>` : '';
+  const ret = t.returnNote && t.status === 'igang' && t.returnNote.at > (t.reportAt || 0)
+    ? `<div class="retbox"><b>↩ Sendt tilbage af ${esc(t.returnNote.byName)}</b> ${fmtDT(t.returnNote.at)}<div>${esc(t.returnNote.text)}</div></div>` : '';
   let actions;
   if (t.status === 'ny') actions = '<button class="btn big go" data-act="start">▶ Start opgaven</button>';
   else if (t.status === 'igang') {
-    actions = (iActive ? '<button class="btn big pause" data-act="stop">⏸ Stop for i dag</button>'
-      : '<button class="btn big go" data-act="resume">▶ Start arbejde</button>') +
-      '<button class="btn big done" data-act="finish">✔ Afslut opgaven</button>';
+    actions = ret + (c.timeTracking ? (iActive ? '<button class="btn big pause" data-act="stop">⏸ Stop for i dag</button>'
+      : '<button class="btn big go" data-act="resume">▶ Start arbejde</button>') : '') +
+      `<a class="btn big done" href="#/meld/${t.id}">📝 Meld færdig</a>`;
+  } else if (t.status === 'tilgodkendelse') {
+    actions = `<div class="waitbox">📝 Meldt færdig ${fmtDT(t.reportAt)}${t.reportByName ? ' af ' + esc(t.reportByName) : ''}<br><small>Venter på chefens godkendelse</small></div>` + seeRep +
+      (isChef() ? '<button class="btn big go" data-act="approve">✔ Godkend og afslut</button><button class="btn big pause" data-act="sendback">↩ Send tilbage</button>' : '');
   } else {
-    actions = `<div class="donebox">✔ Afsluttet ${fmtDT(t.finishedAt)}${t.finishedByName ? ' af ' + esc(t.finishedByName) : ''}</div>` +
+    actions = `<div class="donebox">✔ Afsluttet ${fmtDT(t.finishedAt)}${t.finishedByName ? ' af ' + esc(t.finishedByName) : ''}</div>` + seeRep +
       (isChef() ? '<button class="btn" data-act="reopen">↺ Genåbn opgaven</button>' : '');
   }
-  const activeNames = Object.keys(t.active || {}).map((u) => `${esc(uname(u))} (fra ${fmtDT(t.active[u])})`);
-  const hours = hoursBy(t), hourKeys = Object.keys(hours);
+  const activeNames = c.timeTracking ? Object.keys(t.active || {}).map((u) => `${esc(uname(u))} (fra ${fmtDT(t.active[u])})`) : [];
+  const hours = c.timeTracking ? hoursBy(t) : {}, hourKeys = Object.keys(hours);
   const total = hourKeys.reduce((a, k) => a + hours[k], 0);
   const phone = (t.contactPhone || '').replace(/[^\d+]/g, '');
   const names = (t.assignees || []).map(uname).join(', ');
@@ -506,11 +538,14 @@ function renderDetailTop() {
   ${sec('Tid', `<div class="tl">
       <div>📝 Oprettet ${fmtDT(t.createdAt)}${t.createdByName ? ' af ' + esc(t.createdByName) : ''}</div>
       ${t.startedAt ? `<div>▶ Startet ${fmtDT(t.startedAt)}${t.startedByName ? ' af ' + esc(t.startedByName) : ''}</div>` : ''}
+      ${t.reportAt ? `<div>📝 Meldt færdig ${fmtDT(t.reportAt)}${t.reportByName ? ' af ' + esc(t.reportByName) : ''}</div>` : ''}
       ${t.finishedAt ? `<div>✔ Afsluttet ${fmtDT(t.finishedAt)}${t.finishedByName ? ' af ' + esc(t.finishedByName) : ''}</div>` : ''}
     </div>
     ${hourKeys.length ? `<div class="hours">${hourKeys.map((k) => `<div class="kv"><span>${esc(uname(k))}</span><b>${fmtDur(hours[k])}</b></div>`).join('')}
       ${hourKeys.length > 1 ? `<div class="kv tot"><span>I alt</span><b>${fmtDur(total)}</b></div>` : ''}</div>` : ''}`)}
-  ${isChef() ? `<div class="chefrow"><a class="btn" href="#/ret/${t.id}">✏️ Ret opgave</a><button class="btn danger" data-act="delete">🗑 Slet opgave</button></div>` : ''}`;
+  ${rep && t.status !== 'igang' ? sec('Rapport', `<div class="desc clamp">${esc(rep.text)}</div>${fileBlock(rep.files || [], rep.pending > 0 ? `${rep.pending} billede(r) venter på upload` : '')}`) : ''}
+  ${isChef() ? `<div class="chefrow"><a class="btn" href="#/ret/${t.id}">✏️ Ret opgave</a><button class="btn danger" data-act="delete">🗑 Slet opgave</button></div>
+    ${t.status === 'ny' || t.status === 'igang' ? '<button class="btn linkbtn" data-act="closedirect">Afslut uden rapport</button>' : ''}` : ''}`;
   el.querySelectorAll('[data-act]').forEach((b) => { b.onclick = () => doAction(b.dataset.act, t); });
   wireFiles(el);
 }
@@ -533,10 +568,14 @@ function renderLog() {
     let txt;
     if (e.type === 'start') txt = `▶ <b>${esc(e.byName)}</b> startede`;
     else if (e.type === 'stop') txt = e.who && e.who !== e.by ? `⏸ <b>${esc(e.whoName)}</b> blev stoppet, da opgaven blev afsluttet` : `⏸ <b>${esc(e.byName)}</b> stoppede`;
-    else if (e.type === 'afslut') txt = `✔ <b>${esc(e.byName)}</b> afsluttede opgaven`;
+    else if (e.type === 'afslut' || e.type === 'godkendt') txt = `✔ <b>${esc(e.byName)}</b> ${e.type === 'godkendt' ? 'godkendte og ' : ''}afsluttede opgaven`;
     else if (e.type === 'genaabn') txt = `↺ <b>${esc(e.byName)}</b> genåbnede opgaven`;
-    else txt = esc(e.type);
-    return `<div class="ev"><div>${txt} <span>· ${fmtDT(e.at)}</span></div>${e.text ? `<div class="nt">${esc(e.text)}</div>` : ''}</div>`;
+    else if (e.type === 'retur') txt = `↩ <b>${esc(e.byName)}</b> sendte opgaven tilbage`;
+    else if (e.type === 'rapport') {
+      return `<div class="ev rep"><div>📝 <b>${esc(e.byName)}</b> meldte opgaven færdig <span>· ${fmtDT(e.at)}</span></div>
+        <a href="#/rapport/${S.viewId}" class="replink">📄 Se rapporten</a></div>`;
+    } else txt = esc(e.type);
+    return `<div class="ev${e.type === 'retur' ? ' ret' : ''}"><div>${txt} <span>· ${fmtDT(e.at)}</span></div>${e.text ? `<div class="nt">${esc(e.text)}</div>` : ''}</div>`;
   }).join('');
   el.querySelectorAll('[data-del]').forEach((b) => {
     b.onclick = async () => {
@@ -583,27 +622,30 @@ async function sendNote() {
   processQueue();
 }
 
-function askFinish(t) {
-  const others = Object.keys(t.active || {}).filter((u) => u !== me()).map(uname);
+function askText(title, label, placeholder, okLabel, required) {
   return new Promise((res) => {
-    const s = openSheet(`<h3>Afslut opgaven?</h3>
-      ${others.length ? `<p class="muted">${esc(others.join(' og '))} er også på opgaven og bliver stoppet.</p>` : ''}
-      <label class="form">Afsluttende bemærkning (valgfri)<textarea id="fNote" rows="3" placeholder="Fx alt færdigt, mangler kun asfalt"></textarea></label>
-      <div class="btnrow"><button class="btn" id="fC">Annullér</button><button class="btn done" id="fOk">✔ Afslut</button></div>`, () => res(null));
-    s.querySelector('#fC').onclick = () => closeSheet();
-    s.querySelector('#fOk').onclick = () => { const v = s.querySelector('#fNote').value.trim(); sheetClose = null; closeSheet(); res(v); };
+    const sh = openSheet(`<h3>${title}</h3>
+      <label class="form">${label}<textarea id="aT" rows="3" placeholder="${esc(placeholder)}"></textarea></label>
+      <div class="btnrow"><button class="btn" id="aC">Annullér</button><button class="btn done" id="aOk">${okLabel}</button></div>`, () => res(null));
+    sh.querySelector('#aC').onclick = () => closeSheet();
+    sh.querySelector('#aOk').onclick = () => {
+      const v = sh.querySelector('#aT').value.trim();
+      if (required && !v) { toast('Skriv en kommentar'); return; }
+      sheetClose = null; closeSheet(); res(v);
+    };
   });
 }
 
 async function doAction(act, t) {
-  const uid = me(), name = myName(), now = Date.now();
+  const uid = me(), name = myName(), now = Date.now(), track = cfg().timeTracking;
   const tref = doc(db, 'tasks', t.id);
   const logRef = () => doc(collection(db, 'tasks', t.id, 'log'));
   const ev = (type, extra = {}) => ({ type, text: '', by: uid, byName: name, at: now, ...extra });
+  const stopAllActive = (b) => { for (const u of Object.keys(t.active || {})) b.set(logRef(), ev('stop', { who: u, whoName: uname(u), at: now - 1 })); };
   const b = writeBatch(db);
   if (act === 'start') {
-    b.update(tref, { status: 'igang', startedAt: now, startedBy: uid, startedByName: name, [`active.${uid}`]: now, updatedAt: now, lastBy: uid });
-    b.set(logRef(), ev('start'));
+    b.update(tref, { status: 'igang', startedAt: now, startedBy: uid, startedByName: name, ...(track ? { [`active.${uid}`]: now } : {}), updatedAt: now, lastBy: uid });
+    if (track) b.set(logRef(), ev('start'));
     toast('Opgaven er startet');
   } else if (act === 'resume') {
     b.update(tref, { [`active.${uid}`]: now, updatedAt: now, lastBy: uid });
@@ -611,13 +653,22 @@ async function doAction(act, t) {
   } else if (act === 'stop') {
     b.update(tref, { [`active.${uid}`]: deleteField(), updatedAt: now, lastBy: uid });
     b.set(logRef(), ev('stop'));
-  } else if (act === 'finish') {
-    const note = await askFinish(t);
-    if (note === null) return;
+  } else if (act === 'approve') {
+    if (!(await ask('Godkend rapporten og afslut opgaven?', '✔ Godkend og afslut'))) return;
     b.update(tref, { status: 'afsluttet', finishedAt: now, finishedBy: uid, finishedByName: name, active: {}, updatedAt: now, lastBy: uid });
-    for (const u of Object.keys(t.active || {})) b.set(logRef(), ev('stop', { who: u, whoName: uname(u) }));
-    b.set(logRef(), ev('afslut', { text: note, at: now + 1 }));
-    toast('Opgaven er afsluttet');
+    b.set(logRef(), ev('godkendt'));
+    toast('Opgaven er godkendt og afsluttet');
+  } else if (act === 'sendback') {
+    const note = await askText('Send opgaven tilbage', 'Hvad mangler? (vises for folkene)', 'Fx mangler billede af tilslutning', '↩ Send tilbage', true);
+    if (note === null) return;
+    b.update(tref, { status: 'igang', returnNote: { text: note, by: uid, byName: name, at: now }, updatedAt: now, lastBy: uid });
+    b.set(logRef(), ev('retur', { text: note }));
+    toast('Opgaven er sendt tilbage');
+  } else if (act === 'closedirect') {
+    if (!(await ask('Afslut opgaven uden rapport?', 'Afslut'))) return;
+    b.update(tref, { status: 'afsluttet', startedAt: t.startedAt || now, finishedAt: now, finishedBy: uid, finishedByName: name, active: {}, updatedAt: now, lastBy: uid });
+    stopAllActive(b);
+    b.set(logRef(), ev('godkendt', { text: 'Afsluttet uden rapport' }));
   } else if (act === 'reopen') {
     if (!(await ask('Genåbn opgaven, så der kan arbejdes videre på den?', 'Genåbn'))) return;
     b.update(tref, { status: 'igang', finishedAt: null, finishedBy: null, finishedByName: null, updatedAt: now, lastBy: uid });
@@ -642,6 +693,245 @@ async function deleteTask(t) {
     toast('Opgaven er slettet');
     location.hash = '#/';
   } catch (e) { errLog(e); }
+}
+
+// ------------------------------------------------------------------ meld færdig (rapport)
+
+function draftKey(id) { return 'opg_draft_' + id; }
+function loadDraft(id) { try { return JSON.parse(localStorage.getItem(draftKey(id)) || 'null'); } catch (e) { return null; } }
+function saveDraft(id, d) { try { localStorage.setItem(draftKey(id), JSON.stringify(d)); } catch (e) { } }
+
+function viewReportForm(id) {
+  const t = curTask();
+  setHeader('Meld færdig', `#/opgave/${id}`);
+  if (!t) { $('view').innerHTML = `<div class="empty">${S.tasksLoaded ? 'Opgaven findes ikke.' : 'Henter…'}</div>`; return; }
+  S.formReady = true;
+  if (t.status === 'tilgodkendelse' || t.status === 'afsluttet') {
+    $('view').innerHTML = `<div class="empty">Opgaven er allerede meldt færdig.<br><br><a class="btn" href="#/opgave/${id}">Tilbage til opgaven</a></div>`;
+    return;
+  }
+  const c = cfg(), draft = loadDraft(id), d = draft || {};
+  S.compose = []; S.prevFiles = []; S.prevSig = null; S.mats = (d.mats && d.mats.length) ? d.mats : [{ name: '', qty: '', unit: '' }];
+  $('view').innerHTML = `<form id="rf" class="form" novalidate>
+    <section class="card"><div class="rtitle">${esc(t.title)}</div>${t.address ? `<div class="sub">📍 ${esc(t.address)}</div>` : ''}</section>
+    <section class="card"><h2>Udført arbejde *</h2>
+      <textarea name="text" rows="5" placeholder="Beskriv hvad der er lavet">${esc(d.text)}</textarea></section>
+    <section class="card"><h2>Materialer</h2>
+      <div id="mats"></div>
+      <button type="button" class="btn" id="addMat">＋ Tilføj materiale</button>
+      <datalist id="units">${UNITS.map((u) => `<option value="${u}">`).join('')}</datalist></section>
+    <section class="card"><h2>Mangler / opfølgning</h2>
+      <textarea name="missing" rows="2" placeholder="Fx mangler asfalt (lad stå tom, hvis alt er færdigt)">${esc(d.missing)}</textarea></section>
+    ${c.mileage ? `<section class="card"><h2>Kørsel</h2><label>Antal km<input name="km" inputmode="decimal" value="${esc(d.km)}"></label></section>` : ''}
+    <section class="card"><h2>Billeder af det færdige arbejde *</h2>
+      <p class="muted small">Mindst ét billede, der viser det færdige arbejde.</p>
+      <div id="prevThumbs" class="grid"></div>
+      <div id="cThumbs" class="grid"></div>
+      <div class="crow"><button type="button" class="btn" id="cCam">📷 Tag billede</button><button type="button" class="btn" id="cGal">🖼 Vælg billeder</button></div>
+      <input type="file" id="fCam" accept="image/*" capture="environment" hidden>
+      <input type="file" id="fGal" accept="image/*" multiple hidden></section>
+    ${c.signature ? `<section class="card"><h2>Kundens underskrift</h2>
+      <p class="muted small">Lad kunden skrive under med fingeren (valgfrit).</p>
+      <canvas id="sig" class="sig"></canvas>
+      <div class="crow"><input name="signer" placeholder="Kundens navn" value=""><button type="button" class="btn" id="sigClear">Ryd</button></div></section>` : ''}
+    <div class="formbtns">
+      <a class="btn" href="#/opgave/${id}">Annullér</a>
+      <button class="btn primary" type="submit" id="rfSend">📤 Send til godkendelse</button>
+    </div>
+  </form>`;
+  const form = $('rf');
+  const store = () => saveDraft(id, { text: form.text.value, missing: form.missing.value, km: form.km ? form.km.value : '', mats: S.mats });
+  form.addEventListener('input', store);
+  renderMats(store);
+  $('addMat').onclick = () => { S.mats.push({ name: '', qty: '', unit: '' }); renderMats(store); const ins = $('mats').querySelectorAll('input[data-k="name"]'); ins[ins.length - 1].focus(); };
+  $('cCam').onclick = () => $('fCam').click();
+  $('cGal').onclick = () => $('fGal').click();
+  $('fCam').onchange = (e) => { addCompose(e.target.files); e.target.value = ''; };
+  $('fGal').onchange = (e) => { addCompose(e.target.files); e.target.value = ''; };
+  if (c.signature) setupSignature();
+  form.onsubmit = (e) => { e.preventDefault(); sendReport(t, form); };
+  // Sendt tilbage: udfyld med den forrige rapport, så man kun retter det, der mangler.
+  if (t.reportId) {
+    getDoc(doc(db, 'tasks', t.id, 'log', t.reportId)).then((snap) => {
+      if (!snap.exists() || S.view !== 'meld' || S.viewId !== id) return;
+      const r = snap.data();
+      S.prevFiles = (r.files || []).filter(isImg);
+      if (r.signature) {
+        S.prevSig = { signature: r.signature, signer: r.signer || '' };
+        if (form.signer && !form.signer.value) form.signer.value = r.signer || '';
+        const note = document.createElement('p'); note.className = 'muted small';
+        note.textContent = 'Kunden har allerede skrevet under. Tegn kun igen, hvis underskriften skal skiftes.';
+        if ($('sig')) $('sig').before(note);
+      }
+      renderPrev();
+      if (!draft) {
+        form.text.value = r.text || ''; form.missing.value = r.missing || '';
+        if (form.km) form.km.value = r.km || '';
+        if (r.materials && r.materials.length) { S.mats = r.materials.map((m) => ({ ...m })); renderMats(store); }
+      }
+    }).catch(() => { });
+  }
+}
+
+function renderPrev() {
+  const el = $('prevThumbs');
+  if (!el) return;
+  el.innerHTML = S.prevFiles.map((f, i) => `<div class="thumb"><img src="${esc(f.url)}" alt=""><button type="button" class="x" data-rmp="${i}" aria-label="Fjern">×</button></div>`).join('');
+  el.querySelectorAll('[data-rmp]').forEach((b) => { b.onclick = () => { S.prevFiles.splice(Number(b.dataset.rmp), 1); renderPrev(); }; });
+}
+
+function renderMats(store) {
+  const el = $('mats');
+  el.innerHTML = S.mats.map((m, i) => `<div class="mrow">
+    <input data-i="${i}" data-k="name" placeholder="Materiale" value="${esc(m.name)}">
+    <input data-i="${i}" data-k="qty" placeholder="Antal" inputmode="decimal" value="${esc(m.qty)}">
+    <input data-i="${i}" data-k="unit" placeholder="Enhed" list="units" value="${esc(m.unit)}">
+    <button type="button" class="x" data-rmm="${i}" aria-label="Fjern">×</button></div>`).join('');
+  el.querySelectorAll('input[data-k]').forEach((inp) => { inp.oninput = () => { S.mats[Number(inp.dataset.i)][inp.dataset.k] = inp.value; }; });
+  el.querySelectorAll('[data-rmm]').forEach((b) => {
+    b.onclick = () => { S.mats.splice(Number(b.dataset.rmm), 1); if (!S.mats.length) S.mats.push({ name: '', qty: '', unit: '' }); renderMats(store); store(); };
+  });
+}
+
+let sigDirty = false;
+function setupSignature() {
+  const cv = $('sig'), ctx = cv.getContext('2d');
+  const size = () => { const r = cv.getBoundingClientRect(), dpr = window.devicePixelRatio || 1; cv.width = r.width * dpr; cv.height = r.height * dpr; ctx.scale(dpr, dpr); ctx.lineWidth = 2.5; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#1F2933'; };
+  size(); sigDirty = false;
+  let last = null;
+  const pos = (e) => { const r = cv.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+  cv.onpointerdown = (e) => { cv.setPointerCapture(e.pointerId); last = pos(e); };
+  cv.onpointermove = (e) => { if (!last) return; const p = pos(e); ctx.beginPath(); ctx.moveTo(...last); ctx.lineTo(...p); ctx.stroke(); last = p; sigDirty = true; };
+  cv.onpointerup = cv.onpointercancel = () => { last = null; };
+  $('sigClear').onclick = () => { ctx.clearRect(0, 0, cv.width, cv.height); sigDirty = false; };
+}
+function signatureData() {
+  const cv = $('sig');
+  if (!cv || !sigDirty) return '';
+  const out = document.createElement('canvas'), w = 600, h = Math.round(600 * cv.height / cv.width);
+  out.width = w; out.height = h;
+  const o = out.getContext('2d'); o.fillStyle = '#fff'; o.fillRect(0, 0, w, h); o.drawImage(cv, 0, 0, w, h);
+  return out.toDataURL('image/png');
+}
+
+async function sendReport(t, form) {
+  const c = cfg(), text = form.text.value.trim(), files = S.compose.map((x) => x.file).filter(isImg);
+  if (!text) { toast('Beskriv det udførte arbejde'); form.text.focus(); return; }
+  if (!files.length && !(S.prevFiles || []).length) { toast('Tilføj mindst ét billede af det færdige arbejde'); $('cThumbs').scrollIntoView({ block: 'center' }); return; }
+  const btn = $('rfSend'); btn.disabled = true; btn.textContent = 'Sender…';
+  const uid = me(), name = myName(), now = Date.now();
+  const materials = S.mats.map((m) => ({ name: m.name.trim(), qty: String(m.qty).trim(), unit: m.unit.trim() })).filter((m) => m.name);
+  const tref = doc(db, 'tasks', t.id), r = doc(collection(db, 'tasks', t.id, 'log'));
+  const b = writeBatch(db);
+  if (c.timeTracking) {
+    for (const u of Object.keys(t.active || {})) {
+      b.set(doc(collection(db, 'tasks', t.id, 'log')), { type: 'stop', text: '', by: uid, byName: name, who: u, whoName: uname(u), at: now - 1 });
+    }
+  }
+  b.set(r, {
+    type: 'rapport', text, materials, missing: form.missing.value.trim(),
+    km: c.mileage && form.km ? form.km.value.trim() : '',
+    signature: c.signature ? (signatureData() || (S.prevSig ? S.prevSig.signature : '')) : '',
+    signer: c.signature && form.signer ? form.signer.value.trim() : '',
+    by: uid, byName: name, at: now, files: [...(S.prevFiles || [])], pending: files.length,
+  });
+  b.update(tref, { status: 'tilgodkendelse', reportId: r.id, reportAt: now, reportBy: uid, reportByName: name, active: {}, startedAt: t.startedAt || now, updatedAt: now, lastBy: uid });
+  bg(b.commit(), 'Kunne ikke sende rapporten');
+  try { for (const f of files) await enqueue({ taskId: t.id, logId: r.id, file: f, category: 'efter' }); } catch (e) { errLog(e); }
+  S.compose.forEach((x) => x.url && URL.revokeObjectURL(x.url)); S.compose = [];
+  try { localStorage.removeItem(draftKey(t.id)); } catch (e) { }
+  processQueue();
+  toast('Sendt til godkendelse');
+  location.hash = `#/opgave/${t.id}`;
+}
+
+// ------------------------------------------------------------------ rapport-visning
+
+function viewReport(id) {
+  setHeader('Rapport', `#/opgave/${id}`);
+  S.log = []; S.logLoaded = false;
+  $('view').innerHTML = '<div id="rep"><div class="empty">Henter…</div></div>';
+  S.detailUnsub = onSnapshot(query(collection(db, 'tasks', id, 'log'), orderBy('at', 'asc')), (snap) => {
+    S.log = snap.docs.map((d) => ({ id: d.id, ...d.data() })); S.logLoaded = true; renderReport();
+  }, errLog);
+  renderReport();
+}
+
+function renderReport() {
+  const el = $('rep');
+  if (!el) return;
+  const t = curTask();
+  if (!t || !S.logLoaded) { el.innerHTML = `<div class="empty">${S.tasksLoaded && S.logLoaded ? 'Opgaven findes ikke.' : 'Henter…'}</div>`; return; }
+  const r = S.log.find((e) => e.id === t.reportId);
+  if (!r) { el.innerHTML = '<div class="empty">Der er ingen rapport på denne opgave endnu.</div>'; return; }
+  const c = cfg(), k = S.kunde;
+  const workers = [...new Set([...S.log.filter((e) => e.type === 'start').map((e) => e.byName), r.byName])].filter(Boolean);
+  const hours = c.timeTracking ? hoursBy(t) : {}, hk = Object.keys(hours), total = hk.reduce((a, x) => a + hours[x], 0);
+  const notes = S.log.filter((e) => e.type === 'note');
+  const meta = [
+    ['Opgave', esc(t.title)], ['Adresse', esc(t.address)], ['Kunde', esc(t.customer)],
+    ['Kontakt', esc([t.contactName, t.contactPhone].filter(Boolean).join(' · '))],
+    ['Udført af', esc(workers.join(', '))], ['Startet', fmtDT(t.startedAt)],
+    ['Meldt færdig', `${fmtDT(r.at)} af ${esc(r.byName)}`],
+    ...(t.status === 'afsluttet' && t.finishedAt ? [['Godkendt', `${fmtDT(t.finishedAt)} af ${esc(t.finishedByName || '')}`]] : []),
+    ...(!k && t.ler && t.ler.number ? [['LER-nr.', esc(t.ler.number)]] : []),
+  ].filter(([, v]) => v);
+  const photos = (r.files || []).filter(isImg);
+  el.innerHTML = `
+  <div class="rbtns noprint">
+    <div class="tabs small"><a href="#/rapport/${t.id}" class="${k ? '' : 'on'}">Intern</a><a href="#/rapport/${t.id}/kunde" class="${k ? 'on' : ''}">Kundeversion</a></div>
+    <button class="btn primary" id="printBtn">🖨 Gem som PDF / Print</button>
+  </div>
+  ${isChef() && t.status === 'tilgodkendelse' && !k ? `<div class="rbtns noprint two"><button class="btn go" data-act="approve">✔ Godkend og afslut</button><button class="btn pause" data-act="sendback">↩ Send tilbage</button></div>` : ''}
+  <article class="report">
+    <header class="rhead">
+      ${c.companyName ? `<div class="rco">${esc(c.companyName)}</div>` : ''}
+      <h1>Arbejdsrapport</h1>
+      <div class="rver">${k ? '' : 'Intern version · '}${t.status === 'afsluttet' ? 'Godkendt' : t.status === 'tilgodkendelse' ? 'Venter på godkendelse' : 'Sendt tilbage'}</div>
+    </header>
+    <table class="rmeta">${meta.map(([a, b]) => `<tr><th>${a}</th><td>${b}</td></tr>`).join('')}</table>
+    ${!k && t.description ? `<h2>Opgavebeskrivelse</h2><div class="desc">${esc(t.description)}</div>` : ''}
+    <h2>Udført arbejde</h2><div class="desc">${esc(r.text)}</div>
+    ${r.materials && r.materials.length ? `<h2>Materialer</h2><table class="rtab"><tr><th>Materiale</th><th class="num">Antal</th><th>Enhed</th></tr>
+      ${r.materials.map((m) => `<tr><td>${esc(m.name)}</td><td class="num">${esc(m.qty)}</td><td>${esc(m.unit)}</td></tr>`).join('')}</table>` : ''}
+    ${r.missing ? `<h2>Mangler / opfølgning</h2><div class="desc">${esc(r.missing)}</div>` : ''}
+    ${!k && r.km ? `<h2>Kørsel</h2><div>${esc(r.km)} km</div>` : ''}
+    ${!k && hk.length ? `<h2>Timer</h2><table class="rtab">${hk.map((x) => `<tr><td>${esc(uname(x))}</td><td class="num">${fmtDur(hours[x])}</td></tr>`).join('')}
+      ${hk.length > 1 ? `<tr class="tot"><td>I alt</td><td class="num">${fmtDur(total)}</td></tr>` : ''}</table>` : ''}
+    <h2>Billeder af det færdige arbejde</h2>
+    ${photos.length ? `<div class="rphotos">${photos.map((f) => `<img src="${esc(f.url)}" alt="">`).join('')}</div>` : ''}
+    ${r.pending > 0 ? `<div class="pend">⏳ ${r.pending} billede(r) venter på upload fra ${esc(r.byName)}s telefon</div>` : ''}
+    ${r.signature ? `<h2>Kundens underskrift</h2><img class="rsig" src="${r.signature}" alt=""><div class="sub">${esc(r.signer || '')}${r.signer ? ' · ' : ''}${fmtDT(r.at)}</div>` : ''}
+    ${!k && notes.length ? `<h2>Noter undervejs</h2>${notes.map((n) => `<div class="rnote"><b>${esc(n.byName)}</b> <span>${fmtDT(n.at)}</span>
+      ${n.text ? `<div class="desc">${esc(n.text)}</div>` : ''}${(n.files || []).filter(isImg).length ? `<div class="rphotos small">${n.files.filter(isImg).map((f) => `<img src="${esc(f.url)}" alt="">`).join('')}</div>` : ''}</div>`).join('')}` : ''}
+  </article>`;
+  $('printBtn').onclick = () => window.print();
+  el.querySelectorAll('[data-act]').forEach((b) => { b.onclick = () => doAction(b.dataset.act, t); });
+  el.querySelectorAll('.rphotos img').forEach((img) => {
+    img.onclick = () => { const all = [...img.parentNode.querySelectorAll('img')]; openLightbox(all.map((x) => x.src), all.indexOf(img)); };
+  });
+}
+
+// ------------------------------------------------------------------ indstillinger (chef)
+
+function viewSettings() {
+  setHeader('Indstillinger', '#/');
+  const c = cfg();
+  const sw = (key, title, desc) => `<label class="switch"><div><b>${title}</b><small>${desc}</small></div>
+    <input type="checkbox" data-set="${key}" ${c[key] ? 'checked' : ''}><span class="slider"></span></label>`;
+  $('view').innerHTML = `
+  <section class="card"><h2>Tid og rapport</h2>
+    ${sw('timeTracking', 'Tæl timer', 'Viser knapperne "Stop for i dag" og "Start arbejde" og tæller timer pr. person. Timerne står i den interne rapport.')}
+    ${sw('mileage', 'Kørsel (km)', 'Folkene kan skrive antal kørte km i rapporten, når de melder færdig.')}
+    ${sw('signature', 'Kundens underskrift', 'Kunden kan skrive under med fingeren, når opgaven meldes færdig.')}
+  </section>
+  <section class="card form"><h2>Rapport</h2>
+    <label>Firmanavn (vises øverst på rapporten)<input id="sCo" value="${esc(c.companyName)}" placeholder="Fx Hansens Entreprise ApS"></label>
+  </section>
+  <p class="hint">Ændringer gælder med det samme for alle.</p>`;
+  const save = (data) => bg(setDoc(doc(db, 'settings', 'app'), data, { merge: true }));
+  $('view').querySelectorAll('[data-set]').forEach((inp) => { inp.onchange = () => { save({ [inp.dataset.set]: inp.checked }); toast('Gemt'); }; });
+  $('sCo').onchange = () => { save({ companyName: $('sCo').value.trim() }); toast('Gemt'); };
 }
 
 // ------------------------------------------------------------------ opret / ret opgave (chef)

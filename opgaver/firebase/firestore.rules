@@ -22,17 +22,23 @@ service cloud.firestore {
       allow delete: if isChef();
     }
 
-    // Opgaver: chefen opretter/retter/sletter. Medarbejdere må kun starte, stoppe og afslutte.
+    // Indstillinger: alle godkendte kan læse, kun chefen kan ændre.
+    match /settings/{id} {
+      allow read: if approved();
+      allow write: if isChef();
+    }
+
+    // Opgaver: chefen opretter/retter/sletter/godkender. Medarbejdere må kun starte, stoppe og melde færdig.
     match /tasks/{taskId} {
       allow read: if approved();
       allow create, delete: if isChef();
       allow update: if isChef()
         || (approved()
             && (request.resource.data.status == resource.data.status
-                || request.resource.data.status in ['igang', 'afsluttet'])
+                || request.resource.data.status in ['igang', 'tilgodkendelse'])
             && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
                  'status', 'startedAt', 'startedBy', 'startedByName',
-                 'finishedAt', 'finishedBy', 'finishedByName',
+                 'reportId', 'reportAt', 'reportBy', 'reportByName',
                  'active', 'updatedAt', 'lastBy']));
 
       // Noter, billeder og start/stop-hændelser.
