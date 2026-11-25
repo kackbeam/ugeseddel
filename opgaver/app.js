@@ -14,7 +14,7 @@ import {
 } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-storage.js';
 import { firebaseConfig } from './firebase-config.js';
 
-const VERSION = '1.1';
+const VERSION = '1.2';
 const STATUS = { ny: 'Ny', igang: 'I gang', tilgodkendelse: 'Til godkendelse', afsluttet: 'Afsluttet' };
 const SET_DEF = { timeTracking: true, mileage: false, signature: false, companyName: '' };
 const UNITS = ['stk', 'm', 'm²', 'm³', 'kg', 'l', 'sæk', 'rulle', 'pk', 'time'];
@@ -301,7 +301,9 @@ function refresh() {
 function updateMenuBadge() { $('menuDot').hidden = !(isChef() && pendingCount() > 0); }
 
 const isIOS = () => /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-const guideUrl = (ios = isIOS()) => `vejledning/opgaver-${ios ? 'iphone' : 'android'}.pdf`;
+const device = () => (isIOS() ? 'iphone' : /Android/i.test(navigator.userAgent) ? 'android' : 'pc');
+const DEVICE_L = { iphone: 'iPhone', android: 'Android', pc: 'PC' };
+const guideUrl = () => `vejledning/opgaver-${device()}.pdf`;
 
 // ------------------------------------------------------------------ menu
 
@@ -311,7 +313,7 @@ $('menuBtn').onclick = () => {
   const s = openSheet(`<div class="who"><b>${esc(myName())}</b><small>${esc(S.user.email)}${S.profile ? ' · ' + ROLE_L[S.profile.role] : ''}</small></div>
     ${isChef() ? `<a class="mi" href="#/brugere">👥 Brugere${n ? ` <span class="badge">${n} venter</span>` : ''}</a>` : ''}
     ${isChef() ? '<a class="mi" href="#/indstillinger">⚙️ Indstillinger</a>' : ''}
-    <a class="mi" href="${guideUrl()}" target="_blank" rel="noopener">📖 Brugervejledning <small>(${isIOS() ? 'iPhone' : 'Android'})</small></a>
+    <a class="mi" href="${guideUrl()}" target="_blank" rel="noopener">📖 Brugervejledning <small>(${DEVICE_L[device()]})</small></a>
     ${approved() ? '<button class="mi" id="mName">✏️ Skift mit navn</button>' : ''}
     <button class="mi" id="mReload">🔄 Opdatér appen</button>
     <button class="mi" id="mOut">🚪 Log ud</button>
